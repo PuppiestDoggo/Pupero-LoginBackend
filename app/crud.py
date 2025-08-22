@@ -1,3 +1,4 @@
+from sqlalchemy.ext.asyncio.session import AsyncSession
 from sqlmodel import select
 from sqlmodel import Session
 from app.models import User
@@ -13,7 +14,7 @@ def create_user(session: Session, email: str, password: str, phrase: str = None,
     session.refresh(user)
     return user
 
-def get_user_by_email(session: AsyncSession, email: str) -> User:
+def get_user_by_email(session: Session, email: str) -> User:
     statement = select(User).where(User.email == email)
     return session.exec(statement).first()
 
