@@ -28,8 +28,11 @@ def create_access_token(subject: str, expires_delta: timedelta = None) -> str:
     to_encode = {"exp": expire, "sub": subject}
     return jwt.encode(to_encode, settings.JWT_SECRET_KEY, algorithm=ALGORITHM)
 
-def create_refresh_token(subject: str) -> str:
-    expire = datetime.utcnow() + timedelta(minutes=settings.JWT_REFRESH_TOKEN_EXPIRE_MINUTES)
+def create_refresh_token(subject: str, expires_delta: timedelta = None) -> str:
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(minutes=settings.JWT_REFRESH_TOKEN_EXPIRE_MINUTES)
     to_encode = {"exp": expire, "sub": subject}
     return jwt.encode(to_encode, settings.JWT_SECRET_KEY, algorithm=ALGORITHM)
 
