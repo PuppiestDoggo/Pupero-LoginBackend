@@ -1,10 +1,10 @@
 from sqlmodel import select
-from sqlmodel.ext.asyncio.session import AsyncSession  # Note: Using sync for simplicity; switch to async if needed
+from sqlmodel import Session
 from app.models import User
 from app.auth import hash_password, generate_totp_secret
 from app.config import settings
 
-def create_user(session: AsyncSession, email: str, password: str, phrase: str = None, username: str = None) -> User:
+def create_user(session: Session, email: str, password: str, phrase: str = None, username: str = None) -> User:
     if phrase is None:
         phrase = settings.ANTI_PHISHING_PHRASE_DEFAULT
     user = User(email=email, username=username, password_hash=hash_password(password), phrase=phrase)
