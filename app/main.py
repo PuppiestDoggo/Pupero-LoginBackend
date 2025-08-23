@@ -203,6 +203,10 @@ def disable_totp(current_user: User = Depends(get_current_user), session: Sessio
     return {"message": "TOTP disabled"}
 
 
+@app.get("/totp/status", response_model=dict)
+def totp_status(current_user: User = Depends(get_current_user)):
+    return {"enabled": bool(current_user.totp_secret)}
+
 # GDPR-compliant Delete Account endpoint
 @app.delete("/user/delete", response_model=dict)
 def delete_account(
