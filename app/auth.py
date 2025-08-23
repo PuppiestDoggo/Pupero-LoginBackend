@@ -3,7 +3,13 @@ from jose import JWTError, jwt
 from passlib.context import CryptContext
 from pyotp import TOTP, random_base32
 from app.config import settings
-from app.schemas import Token
+# Centralized schemas import from CreateDB with repo-root guard for local runs
+import os, sys
+_current_dir = os.path.dirname(os.path.abspath(__file__))
+_repo_root = os.path.abspath(os.path.join(_current_dir, '..', '..'))
+if _repo_root not in sys.path:
+    sys.path.insert(0, _repo_root)
+from CreateDB.schemas import Token
 import qrcode
 import io
 import base64

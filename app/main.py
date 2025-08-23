@@ -11,7 +11,13 @@ from app.auth import verify_password, create_access_token, create_refresh_token,
     generate_totp_qr, generate_totp_secret
 from app.deps import get_current_user
 from app.models import User
-from app.schemas import UserRegister, UserLogin, Token, TokenRefresh, PasswordResetRequest, UserProfile, UserUpdate, TOTPEnableResponse, TOTPEnableConfirm, DeleteAccountRequest
+# Centralized schemas import from CreateDB with repo-root guard for local runs
+import os, sys
+_current_dir = os.path.dirname(os.path.abspath(__file__))
+_repo_root = os.path.abspath(os.path.join(_current_dir, '..', '..'))
+if _repo_root not in sys.path:
+    sys.path.insert(0, _repo_root)
+from CreateDB.schemas import UserRegister, UserLogin, Token, TokenRefresh, PasswordResetRequest, UserProfile, UserUpdate, TOTPEnableResponse, TOTPEnableConfirm, DeleteAccountRequest
 from app.config import settings
 
 app = FastAPI(title="Pupero Auth Service")
