@@ -1,7 +1,7 @@
 ### Code Files
 
 #### app/config.py
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     ANTI_PHISHING_PHRASE_DEFAULT: str = "Welcome to Pupero"
     SQL_ECHO: bool = False
 
-    class Config:
-        env_file = ".env"
+    # Accept extra env vars like LOGIN_PORT without failing
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 settings = Settings()

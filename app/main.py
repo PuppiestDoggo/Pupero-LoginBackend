@@ -120,7 +120,7 @@ def password_reset(reset_in: PasswordResetRequest, session: Session = Depends(ge
 
 @app.get("/user/profile", response_model=UserProfile)
 def get_profile(current_user: User = Depends(get_current_user)):
-    return UserProfile(email=current_user.email, username=current_user.username, role=current_user.role, phrase=current_user.phrase)
+    return UserProfile(id=current_user.id, email=current_user.email, username=current_user.username, role=current_user.role, phrase=current_user.phrase)
 
 @app.put("/user/update", response_model=dict)
 def update_profile(update_in: UserUpdate, current_user: User = Depends(get_current_user), session: Session = Depends(get_session)):

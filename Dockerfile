@@ -15,6 +15,6 @@ COPY CreateDB /app/CreateDB
 COPY Login/app /app/app
 COPY Login/.env /app/.env
 
-EXPOSE 8000
+EXPOSE 8001
 
-CMD ["/bin/sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${LOGIN_PORT:-8000}"]
+CMD ["/bin/sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${LOGIN_PORT:-8001}"]
