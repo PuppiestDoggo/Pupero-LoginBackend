@@ -1,7 +1,15 @@
-# Re-export User model from centralized CreateDB, with repo-root path guard for local runs
-import os, sys
-_current_dir = os.path.dirname(os.path.abspath(__file__))
-_repo_root = os.path.abspath(os.path.join(_current_dir, '..', '..'))
-if _repo_root not in sys.path:
-    sys.path.insert(0, _repo_root)
-from CreateDB.models import User  # noqa: F401
+from typing import Optional
+from datetime import datetime
+from sqlmodel import SQLModel, Field
+from sqlalchemy.sql import func
+
+class User(SQLModel, table=True):
+    __tablename__ = "user"
+    id: Optional[int] = Field(default=None, primary_key=True)
+    email: str = Field(index=True)
+    username: Optional[str] = Field(default=None, index=True)
+    password_hash: str
+    role: str = Field(default="user")
+    totp_secret: Optional[str] = None
+    phrase: str
+    created_at: datetime = Field(default_factory=datetime.utcnow, sa_column_kwargs={"server_default": func.current_timestamp()})

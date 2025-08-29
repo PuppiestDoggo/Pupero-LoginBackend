@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     REMEMBER_ME_DAYS: int = 30
     ANTI_PHISHING_PHRASE_DEFAULT: str = "Welcome to Pupero"
     SQL_ECHO: bool = False
+    MONERO_SERVICE_URL: str | None = None
 
     # Accept extra env vars like LOGIN_PORT without failing
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")

@@ -3,7 +3,7 @@
 FastAPI service handling user registration, login with JWT, profile management, and TOTP 2FA.
 
 - Default port: 8001
-- Backed by MariaDB using SQLModel models defined in CreateDB
+- Backed by MariaDB; this service defines its own SQLModel models locally
 
 ## Main endpoints
 - POST /register
@@ -46,6 +46,6 @@ docker run --rm -p 8001:8001 --env-file Login/.env pupero-login
 ```
 
 ## Notes
-- Database tables must be created by the CreateDB utility.
-- The service reads centralized models/schemas from CreateDB.
+- Database tables are initialized by the DB service (MariaDB image) via init scripts.
+- The service defines its own Pydantic schemas and SQLModel models; it does not import from other projects.
 - Works best behind APIManager at /auth/*

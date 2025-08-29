@@ -11,16 +11,15 @@ from app.auth import verify_password, create_access_token, create_refresh_token,
     generate_totp_qr, generate_totp_secret
 from app.deps import get_current_user
 from app.models import User
-# Centralized schemas import from CreateDB with repo-root guard for local runs
-import os, sys
-_current_dir = os.path.dirname(os.path.abspath(__file__))
-_repo_root = os.path.abspath(os.path.join(_current_dir, '..', '..'))
-if _repo_root not in sys.path:
-    sys.path.insert(0, _repo_root)
-from CreateDB.schemas import UserRegister, UserLogin, Token, TokenRefresh, PasswordResetRequest, UserProfile, UserUpdate, TOTPEnableResponse, TOTPEnableConfirm, DeleteAccountRequest
+from app.schemas import UserRegister, UserLogin, Token, TokenRefresh, PasswordResetRequest, UserProfile, UserUpdate, TOTPEnableResponse, TOTPEnableConfirm, DeleteAccountRequest
 from app.config import settings
 
 app = FastAPI(title="Pupero Auth Service")
+
+# Basic health endpoint for docker healthcheck
+@app.get("/healthz")
+def healthz():
+    return {"status": "ok"}
 
 # Basic JSON logging setup
 logger = logging.getLogger("pupero_auth")
@@ -68,6 +67,23 @@ def register(user_in: UserRegister, session: Session = Depends(get_session)):
         raise HTTPException(status_code=400, detail="Username already taken")
     user = create_user(session, user_in.email, user_in.password, username=user_in.username)
     logger.info(json.dumps({"event": "register_success", "user": user.email}))
+
+    # Attempt to create a Monero subaddress for the user (non-fatal on error)
+    try:
+        if settings.MONERO_SERVICE_URL:
+            import httpx
+            label = user.username or f"user_{user.id}"
+            url = settings.MONERO_SERVICE_URL.rstrip("/") + "/addresses"
+            payload = {"user_id": user.id, "label": label}
+            with httpx.Client(timeout=10.0) as client:
+                r = client.post(url, json=payload)
+                ok = r.status_code in (200, 201)
+                logger.info(json.dumps({"event": "monero_address_create", "user_id": user.id, "status": r.status_code, "ok": ok}))
+        else:
+            logger.info(json.dumps({"event": "monero_address_skip", "reason": "MONERO_SERVICE_URL not set", "user_id": user.id}))
+    except Exception as e:
+        logger.warning(json.dumps({"event": "monero_address_error", "user_id": user.id, "error": str(e)}))
+
     return {"user_id": user.id}
 
 @app.post("/login", response_model=Token)
