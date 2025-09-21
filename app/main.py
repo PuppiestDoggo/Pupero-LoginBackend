@@ -73,7 +73,19 @@ def register(user_in: UserRegister, session: Session = Depends(get_session)):
         if settings.MONERO_SERVICE_URL:
             import httpx
             label = user.username or f"user_{user.id}"
-            url = settings.MONERO_SERVICE_URL.rstrip("/") + "/addresses"
+            def _normalize_monero_base(val: str | None) -> str:
+                if not val:
+                    return "http://monero:8004"
+                v = val.strip().rstrip("/")
+                if "://" in v:
+                    return v
+                if v in {"api-manager", "pupero-api-manager"}:
+                    return f"http://{v}:8000/monero"
+                if v in {"monero", "pupero-monero"}:
+                    return f"http://{v}:8004"
+                return "http://monero:8004"
+            base = _normalize_monero_base(settings.MONERO_SERVICE_URL)
+            url = base + "/addresses"
             payload = {"user_id": user.id, "label": label}
             with httpx.Client(timeout=10.0) as client:
                 r = client.post(url, json=payload)
