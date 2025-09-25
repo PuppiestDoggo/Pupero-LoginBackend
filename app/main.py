@@ -81,7 +81,7 @@ def register(user_in: UserRegister, session: Session = Depends(get_session)):
                     return v
                 if v in {"api-manager", "pupero-api-manager"}:
                     return f"http://{v}:8000/monero"
-                if v in {"monero", "pupero-monero"}:
+                if v in {"monero", "pupero-WalletManager"}:
                     return f"http://{v}:8004"
                 return "http://monero:8004"
             base = _normalize_monero_base(settings.MONERO_SERVICE_URL)

@@ -8,7 +8,9 @@ load_dotenv()
 
 class Settings(BaseSettings):
     DATABASE_URL: str
-    JWT_SECRET_KEY: str
+    # Provide a development default so the service can start without env override.
+    # In production, always set JWT_SECRET_KEY via environment variables.
+    JWT_SECRET_KEY: str = "dev-secret-change-me"
     JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     JWT_REFRESH_TOKEN_EXPIRE_MINUTES: int = 1440
     REMEMBER_ME_DAYS: int = 30
