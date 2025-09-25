@@ -68,6 +68,34 @@ def register(user_in: UserRegister, session: Session = Depends(get_session)):
     user = create_user(session, user_in.email, user_in.password, username=user_in.username)
     logger.info(json.dumps({"event": "register_success", "user": user.email}))
 
+    # Attempt to create a Matrix account for the user (non-fatal on error)
+    try:
+        if getattr(settings, "MATRIX_ENABLED", True) and getattr(settings, "MATRIX_HS_URL", None):
+            import httpx
+            base = settings.MATRIX_HS_URL.rstrip("/")
+            localpart = f"{getattr(settings, 'MATRIX_USER_PREFIX', 'u')}{user.id}"
+            password = f"pw-{user.id}-{getattr(settings, 'MATRIX_DEFAULT_PASSWORD_SECRET', 'change-me')}"
+            url = base + "/_matrix/client/v3/register"
+            payload = {"username": localpart, "password": password, "auth": {"type": "m.login.dummy"}}
+            with httpx.Client(timeout=10.0) as client:
+                r = client.post(url, json=payload)
+                if r.status_code in (200, 201):
+                    logger.info(json.dumps({"event": "matrix_register", "user_id": user.id, "status": r.status_code}))
+                else:
+                    # If already exists, Synapse returns 400 with M_USER_IN_USE
+                    try:
+                        data = r.json()
+                        if r.status_code == 400 and data.get("errcode") == "M_USER_IN_USE":
+                            logger.info(json.dumps({"event": "matrix_register_exists", "user_id": user.id}))
+                        else:
+                            logger.warning(json.dumps({"event": "matrix_register_failed", "user_id": user.id, "status": r.status_code, "body": data}))
+                    except Exception:
+                        logger.warning(json.dumps({"event": "matrix_register_failed", "user_id": user.id, "status": r.status_code, "body": r.text}))
+        else:
+            logger.info(json.dumps({"event": "matrix_register_skip", "reason": "MATRIX not enabled or HS URL not set", "user_id": user.id}))
+    except Exception as e:
+        logger.warning(json.dumps({"event": "matrix_register_error", "user_id": user.id, "error": str(e)}))
+
     # Attempt to create a Monero subaddress for the user (non-fatal on error)
     try:
         if settings.MONERO_SERVICE_URL:

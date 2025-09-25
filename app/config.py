@@ -18,6 +18,13 @@ class Settings(BaseSettings):
     SQL_ECHO: bool = False
     MONERO_SERVICE_URL: str | None = None
 
+    # Matrix integration (for auto account creation)
+    MATRIX_ENABLED: bool = True
+    MATRIX_HS_URL: str | None = "http://pupero-matrix-synapse:8008"
+    MATRIX_SERVER_NAME: str = "localhost"
+    MATRIX_USER_PREFIX: str = "u"
+    MATRIX_DEFAULT_PASSWORD_SECRET: str = "change-me"
+
     # Accept extra env vars like LOGIN_PORT without failing
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
