@@ -21,6 +21,11 @@ app = FastAPI(title="Pupero Auth Service")
 def healthz():
     return {"status": "ok"}
 
+# Alias for k8s/monitoring expectations
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
 # Basic JSON logging setup
 logger = logging.getLogger("pupero_auth")
 if not logger.handlers:
