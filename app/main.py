@@ -17,6 +17,17 @@ from datetime import datetime
 
 app = FastAPI(title="Pupero Auth Service")
 
+# Run idempotent DB migrations on startup to ensure required columns exist
+from app.database import run_startup_migrations
+
+@app.on_event("startup")
+def _startup_migrations():
+    try:
+        run_startup_migrations()
+    except Exception:
+        # Do not block startup if migrations fail; errors will surface on first access otherwise
+        pass
+
 # Basic health endpoint for docker healthcheck
 @app.get("/healthz")
 def healthz():
