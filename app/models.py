@@ -10,6 +10,9 @@ class User(SQLModel, table=True):
     username: Optional[str] = Field(default=None, index=True)
     password_hash: str
     role: str = Field(default="user")
+    is_disabled: bool = Field(default=False, index=True)
+    force_logout_at: Optional[datetime] = Field(default=None, index=True)
     totp_secret: Optional[str] = None
+    matrix_localpart: Optional[str] = Field(default=None, index=True)
     phrase: str
     created_at: datetime = Field(default_factory=datetime.utcnow, sa_column_kwargs={"server_default": func.current_timestamp()})

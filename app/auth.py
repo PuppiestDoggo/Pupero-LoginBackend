@@ -21,19 +21,21 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 ALGORITHM = "HS256"
 
 def create_access_token(subject: str, expires_delta: timedelta = None) -> str:
+    now = datetime.utcnow()
     if expires_delta:
-        expire = datetime.utcnow() + expires_delta
+        expire = now + expires_delta
     else:
-        expire = datetime.utcnow() + timedelta(minutes=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES)
-    to_encode = {"exp": expire, "sub": subject}
+        expire = now + timedelta(minutes=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES)
+    to_encode = {"iat": now, "exp": expire, "sub": subject}
     return jwt.encode(to_encode, settings.JWT_SECRET_KEY, algorithm=ALGORITHM)
 
 def create_refresh_token(subject: str, expires_delta: timedelta = None) -> str:
+    now = datetime.utcnow()
     if expires_delta:
-        expire = datetime.utcnow() + expires_delta
+        expire = now + expires_delta
     else:
-        expire = datetime.utcnow() + timedelta(minutes=settings.JWT_REFRESH_TOKEN_EXPIRE_MINUTES)
-    to_encode = {"exp": expire, "sub": subject}
+        expire = now + timedelta(minutes=settings.JWT_REFRESH_TOKEN_EXPIRE_MINUTES)
+    to_encode = {"iat": now, "exp": expire, "sub": subject}
     return jwt.encode(to_encode, settings.JWT_SECRET_KEY, algorithm=ALGORITHM)
 
 def verify_token(token: str) -> str:

@@ -1,6 +1,6 @@
 from fastapi import FastAPI, Depends, HTTPException, status, Form, Body, Request
 from typing import Optional
-from sqlmodel import Session
+from sqlmodel import Session, select
 import logging
 import json
 import time
@@ -13,6 +13,7 @@ from app.deps import get_current_user
 from app.models import User
 from app.schemas import UserRegister, UserLogin, Token, TokenRefresh, PasswordResetRequest, UserProfile, UserUpdate, TOTPEnableResponse, TOTPEnableConfirm, DeleteAccountRequest
 from app.config import settings
+from datetime import datetime
 
 app = FastAPI(title="Pupero Auth Service")
 
@@ -65,33 +66,41 @@ def register(user_in: UserRegister, session: Session = Depends(get_session)):
     if existing_user:
         logger.info(json.dumps({"event": "register_conflict", "email": user_in.email}))
         raise HTTPException(status_code=400, detail="Email already registered")
-    # Optional: ensure username uniqueness if provided
+    # Ensure username present; if missing, derive from email local-part
+    username = (user_in.username or user_in.email.split("@")[0]).strip()
+    if not username:
+        raise HTTPException(status_code=400, detail="Username is required")
+    # Enforce uniqueness
     from app.crud import get_user_by_username
-    if user_in.username and get_user_by_username(session, user_in.username):
-        logger.info(json.dumps({"event": "register_conflict_username", "username": user_in.username}))
+    if get_user_by_username(session, username):
+        logger.info(json.dumps({"event": "register_conflict_username", "username": username}))
         raise HTTPException(status_code=400, detail="Username already taken")
-    user = create_user(session, user_in.email, user_in.password, username=user_in.username)
+    user = create_user(session, user_in.email, user_in.password, username=username)
     logger.info(json.dumps({"event": "register_success", "user": user.email}))
 
-    # Attempt to create a Matrix account for the user (non-fatal on error)
+    # Attempt to create a Matrix account for the user using their username and website password (best-effort)
     try:
         if getattr(settings, "MATRIX_ENABLED", True) and getattr(settings, "MATRIX_HS_URL", None):
             import httpx
             base = settings.MATRIX_HS_URL.rstrip("/")
-            localpart = f"{getattr(settings, 'MATRIX_USER_PREFIX', 'u')}{user.id}"
-            password = f"pw-{user.id}-{getattr(settings, 'MATRIX_DEFAULT_PASSWORD_SECRET', 'change-me')}"
+            # sanitize localpart
+            raw = (user.username or "").strip().lower()
+            allowed = set("abcdefghijklmnopqrstuvwxyz0123456789._=-")
+            localpart = ''.join(ch if ch in allowed else '_' for ch in raw).strip('_') or f"{getattr(settings,'MATRIX_USER_PREFIX','u')}{user.id}"
             url = base + "/_matrix/client/v3/register"
-            payload = {"username": localpart, "password": password, "auth": {"type": "m.login.dummy"}}
+            payload = {"username": localpart, "password": user_in.password, "auth": {"type": "m.login.dummy"}}
             with httpx.Client(timeout=10.0) as client:
                 r = client.post(url, json=payload)
                 if r.status_code in (200, 201):
-                    logger.info(json.dumps({"event": "matrix_register", "user_id": user.id, "status": r.status_code}))
+                    # persist matrix_localpart
+                    update_user(session, user, {"matrix_localpart": localpart})
+                    logger.info(json.dumps({"event": "matrix_register", "user_id": user.id, "localpart": localpart, "status": r.status_code}))
                 else:
-                    # If already exists, Synapse returns 400 with M_USER_IN_USE
                     try:
                         data = r.json()
                         if r.status_code == 400 and data.get("errcode") == "M_USER_IN_USE":
-                            logger.info(json.dumps({"event": "matrix_register_exists", "user_id": user.id}))
+                            update_user(session, user, {"matrix_localpart": localpart})
+                            logger.info(json.dumps({"event": "matrix_register_exists", "user_id": user.id, "localpart": localpart}))
                         else:
                             logger.warning(json.dumps({"event": "matrix_register_failed", "user_id": user.id, "status": r.status_code, "body": data}))
                     except Exception:
@@ -153,8 +162,28 @@ def login(credentials: UserLogin, session: Session = Depends(get_session)):
         refresh_exp = timedelta(days=settings.REMEMBER_ME_DAYS)
     access_token = create_access_token(user.email, expires_delta=access_exp)
     refresh_token = create_refresh_token(user.email, expires_delta=refresh_exp)
+
+    # Best-effort: also login to Matrix to obtain a matrix_access_token
+    matrix_token = None
+    try:
+        if getattr(settings, "MATRIX_ENABLED", True) and getattr(settings, "MATRIX_HS_URL", None):
+            import httpx
+            base = settings.MATRIX_HS_URL.rstrip("/")
+            local = user.matrix_localpart
+            if not local:
+                raw = (user.username or "").strip().lower()
+                allowed = set("abcdefghijklmnopqrstuvwxyz0123456789._=-")
+                local = ''.join(ch if ch in allowed else '_' for ch in raw).strip('_') or f"{getattr(settings,'MATRIX_USER_PREFIX','u')}{user.id}"
+            payload = {"type": "m.login.password", "user": local, "password": credentials.password}
+            with httpx.Client(timeout=10.0) as client:
+                r = client.post(base + "/_matrix/client/v3/login", json=payload)
+                if r.status_code == 200:
+                    matrix_token = (r.json() or {}).get("access_token")
+    except Exception:
+        matrix_token = None
+
     logger.info(json.dumps({"event": "login_success", "user": user.email, "remember_me": bool(credentials.remember_me)}))
-    return {"access_token": access_token, "refresh_token": refresh_token}
+    return {"access_token": access_token, "refresh_token": refresh_token, "matrix_access_token": matrix_token}
 
 @app.post("/refresh", response_model=Token)
 def refresh(token_in: TokenRefresh, session: Session = Depends(get_session)):
@@ -223,6 +252,28 @@ def update_profile(update_in: UserUpdate, current_user: User = Depends(get_curre
                 "refresh_token": create_refresh_token(current_user.email)
             }
     if updates:
+        # If password changed, attempt to update Matrix password too (best-effort)
+        if "password_hash" in updates:
+            try:
+                if getattr(settings, "MATRIX_ENABLED", True) and getattr(settings, "MATRIX_HS_URL", None):
+                    import httpx
+                    base = settings.MATRIX_HS_URL.rstrip("/")
+                    local = current_user.matrix_localpart or (current_user.username or "").strip().lower()
+                    if not local:
+                        local = f"{getattr(settings,'MATRIX_USER_PREFIX','u')}{current_user.id}"
+                    # UIA password change
+                    payload = {
+                        "auth": {
+                            "type": "m.login.password",
+                            "identifier": {"type": "m.id.user", "user": local},
+                            "password": update_in.current_password
+                        },
+                        "new_password": update_in.new_password
+                    }
+                    with httpx.Client(timeout=10.0) as client:
+                        client.post(base + "/_matrix/client/v3/account/password", json=payload)
+            except Exception:
+                pass
         update_user(session, current_user, updates)
         logger.info(json.dumps({"event": "profile_update", "user": current_user.email, "fields": list(updates.keys())}))
     resp = {"message": "Profile updated"}
@@ -291,3 +342,78 @@ def delete_account(
     delete_user(session, current_user)
     logger.info(json.dumps({"event": "account_deleted", "user": email}))
     return {"message": "Account deleted"}
+
+
+# --- Admin endpoints ---
+from fastapi import APIRouter
+admin_router = APIRouter(prefix="/admin", tags=["Admin"])
+
+def _require_admin(user: User):
+    role = (user.role or "").strip().lower()
+    if role not in {"admin", "superadmin"}:
+        raise HTTPException(status_code=403, detail="Admin privileges required")
+
+@admin_router.get("/users")
+def admin_list_users(current_user: User = Depends(get_current_user), session: Session = Depends(get_session)):
+    _require_admin(current_user)
+    rows = session.exec(select(User)).all()
+    out = []
+    for u in rows:
+        out.append({
+            "id": u.id,
+            "email": u.email,
+            "username": u.username,
+            "role": u.role,
+            "is_disabled": bool(u.is_disabled),
+            "created_at": u.created_at,
+            "force_logout_at": u.force_logout_at,
+            "matrix_localpart": u.matrix_localpart,
+        })
+    return {"users": out}
+
+@admin_router.post("/users/{user_id}/disable")
+def admin_disable_user(user_id: int, payload: dict = Body(default={}), current_user: User = Depends(get_current_user), session: Session = Depends(get_session)):
+    _require_admin(current_user)
+    target = session.get(User, user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    disabled = bool(payload.get("disabled", True))
+    update_user(session, target, {"is_disabled": disabled})
+    return {"user_id": user_id, "is_disabled": disabled}
+
+@admin_router.post("/users/{user_id}/role")
+def admin_set_role(user_id: int, payload: dict = Body(default={}), current_user: User = Depends(get_current_user), session: Session = Depends(get_session)):
+    _require_admin(current_user)
+    target = session.get(User, user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    new_role = (payload.get("role") or "").strip().lower()
+    if new_role not in {"user", "admin", "superadmin"}:
+        raise HTTPException(status_code=400, detail="Invalid role")
+    update_user(session, target, {"role": new_role})
+    return {"user_id": user_id, "role": new_role}
+
+@admin_router.post("/users/{user_id}/password")
+def admin_reset_password(user_id: int, payload: dict = Body(default={}), current_user: User = Depends(get_current_user), session: Session = Depends(get_session)):
+    _require_admin(current_user)
+    target = session.get(User, user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    new_password = payload.get("new_password")
+    if not new_password or len(str(new_password)) < 6:
+        raise HTTPException(status_code=400, detail="Password too short")
+    from app.auth import hash_password
+    update_user(session, target, {"password_hash": hash_password(new_password)})
+    # Note: As requested, do NOT update Matrix here (admin does not have current password for UIA)
+    return {"user_id": user_id, "message": "password_reset"}
+
+@admin_router.post("/users/{user_id}/logout")
+def admin_force_logout(user_id: int, current_user: User = Depends(get_current_user), session: Session = Depends(get_session)):
+    _require_admin(current_user)
+    target = session.get(User, user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    update_user(session, target, {"force_logout_at": datetime.utcnow()})
+    return {"user_id": user_id, "message": "logout_forced"}
+
+app.include_router(admin_router)
