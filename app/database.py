@@ -24,11 +24,23 @@ def run_startup_migrations() -> None:
         "ALTER TABLE user ADD COLUMN IF NOT EXISTS totp_secret VARCHAR(255) NULL",
         "ALTER TABLE user ADD COLUMN IF NOT EXISTS matrix_localpart VARCHAR(255) NULL",
         "ALTER TABLE user ADD COLUMN IF NOT EXISTS phrase VARCHAR(255) NOT NULL DEFAULT 'Welcome to Pupero'",
+        "ALTER TABLE user ADD COLUMN IF NOT EXISTS successful_trades INT NOT NULL DEFAULT 0",
         "ALTER TABLE user ADD COLUMN IF NOT EXISTS created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP",
         # Helpful indexes (idempotent in MariaDB 10.5+ with IF NOT EXISTS; wrap in try/except otherwise)
         "CREATE INDEX IF NOT EXISTS ix_user_email ON user (email)",
         "CREATE INDEX IF NOT EXISTS ix_user_username ON user (username)",
         "CREATE INDEX IF NOT EXISTS ix_user_is_disabled ON user (is_disabled)",
+        "CREATE TABLE IF NOT EXISTS review ("
+        "id BIGINT PRIMARY KEY AUTO_INCREMENT,"
+        "trade_id VARCHAR(64) NOT NULL,"
+        "reviewer_user_id BIGINT NOT NULL,"
+        "reviewee_user_id BIGINT NOT NULL,"
+        "rating TINYINT NOT NULL CHECK (rating BETWEEN 1 AND 5),"
+        "comment TEXT NOT NULL,"
+        "created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,"
+        "UNIQUE KEY uq_review_trade_reviewer (trade_id, reviewer_user_id),"
+        "INDEX ix_review_reviewee (reviewee_user_id)"
+        ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
     ]
     try:
         with engine.connect() as conn:

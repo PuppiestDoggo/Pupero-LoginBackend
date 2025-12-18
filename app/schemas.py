@@ -1,5 +1,6 @@
 from pydantic import BaseModel, EmailStr, Field
 from typing import Optional
+from datetime import datetime
 
 class UserRegister(BaseModel):
     email: EmailStr
@@ -50,3 +51,35 @@ class DeleteAccountRequest(BaseModel):
     current_password: str
     totp: Optional[str] = None
     confirm: bool = False
+
+class ReviewCreate(BaseModel):
+    trade_id: str
+    reviewee_user_id: int
+    rating: int = Field(ge=1, le=5)
+    comment: str
+
+class ReviewRead(BaseModel):
+    id: int
+    trade_id: str
+    reviewer_user_id: int
+    reviewee_user_id: int
+    rating: int
+    comment: str
+    created_at: datetime = None
+
+class ReviewsSummary(BaseModel):
+    user_id: int
+    average_rating: float
+    count: int
+    reviews: list[ReviewRead]
+
+class UserPublic(BaseModel):
+    id: int
+    username: Optional[str] = None
+    matrix_localpart: Optional[str] = None
+
+class UserPublicProfile(BaseModel):
+    id: int
+    username: Optional[str] = None
+    successful_trades: int
+    created_at: datetime

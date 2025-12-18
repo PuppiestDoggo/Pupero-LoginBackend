@@ -10,8 +10,8 @@ from app.crud import create_user, get_user_by_email, update_user, crud_enable_to
 from app.auth import verify_password, create_access_token, create_refresh_token, verify_token, verify_totp, \
     generate_totp_qr, generate_totp_secret
 from app.deps import get_current_user
-from app.models import User
-from app.schemas import UserRegister, UserLogin, Token, TokenRefresh, PasswordResetRequest, UserProfile, UserUpdate, TOTPEnableResponse, TOTPEnableConfirm, DeleteAccountRequest
+from app.models import User, Review
+from app.schemas import UserRegister, UserLogin, Token, TokenRefresh, PasswordResetRequest, UserProfile, UserUpdate, TOTPEnableResponse, TOTPEnableConfirm, DeleteAccountRequest, ReviewCreate, ReviewRead, ReviewsSummary, UserPublic, UserPublicProfile
 from app.config import settings
 from datetime import datetime
 
@@ -236,6 +236,45 @@ def update_profile(update_in: UserUpdate, current_user: User = Depends(get_curre
             if get_user_by_username(session, update_in.username):
                 raise HTTPException(status_code=400, detail="Username already taken")
             updates["username"] = update_in.username
+            # Handle Matrix account migration
+            if getattr(settings, "MATRIX_ENABLED", True) and getattr(settings, "MATRIX_HS_URL", None):
+                # Require current password for username change to allow Matrix sync
+                if not update_in.current_password or not verify_password(update_in.current_password, current_user.password_hash):
+                     raise HTTPException(status_code=400, detail="Current password required to change username")
+                try:
+                    import httpx
+                    base = settings.MATRIX_HS_URL.rstrip("/")
+                    # 1. Derive new localpart
+                    raw = (update_in.username or "").strip().lower()
+                    allowed = set("abcdefghijklmnopqrstuvwxyz0123456789._=-")
+                    new_local = ''.join(ch if ch in allowed else '_' for ch in raw).strip('_') or f"{getattr(settings,'MATRIX_USER_PREFIX','u')}{current_user.id}"
+                    
+                    # 2. Register new account with CURRENT password
+                    reg_payload = {"username": new_local, "password": update_in.current_password, "auth": {"type": "m.login.dummy"}}
+                    with httpx.Client(timeout=10.0) as client:
+                        client.post(base + "/_matrix/client/v3/register", json=reg_payload)
+                    
+                    # 3. Deactivate old account
+                    old_local = current_user.matrix_localpart
+                    if old_local:
+                        with httpx.Client(timeout=10.0) as client:
+                            # Login to get token
+                            l_res = client.post(base + "/_matrix/client/v3/login", json={
+                                "type": "m.login.password", "user": old_local, "password": update_in.current_password
+                            })
+                            if l_res.status_code == 200:
+                                tok = l_res.json().get("access_token")
+                                client.post(base + "/_matrix/client/v3/account/deactivate", 
+                                            json={"auth": {"type": "m.login.password", "user": old_local, "password": update_in.current_password}}, 
+                                            headers={"Authorization": f"Bearer {tok}"})
+                    
+                    updates["matrix_localpart"] = new_local
+                except Exception as e:
+                    logger.warning(f"Matrix username migration failed: {e}")
+                    # We continue even if Matrix fails, to not block Pupero profile update? 
+                    # Or should we rollback? Plan says "Caveat: Room history cannot be migrated".
+                    # For now we proceed best-effort.
+
     # Update email (requires current_password)
     tokens = {}
     if update_in.new_email:
@@ -269,7 +308,7 @@ def update_profile(update_in: UserUpdate, current_user: User = Depends(get_curre
                 if getattr(settings, "MATRIX_ENABLED", True) and getattr(settings, "MATRIX_HS_URL", None):
                     import httpx
                     base = settings.MATRIX_HS_URL.rstrip("/")
-                    local = current_user.matrix_localpart or (current_user.username or "").strip().lower()
+                    local = updates.get("matrix_localpart") or current_user.matrix_localpart or (current_user.username or "").strip().lower()
                     if not local:
                         local = f"{getattr(settings,'MATRIX_USER_PREFIX','u')}{current_user.id}"
                     # UIA password change
@@ -355,6 +394,35 @@ def delete_account(
     return {"message": "Account deleted"}
 
 
+@app.get("/users/{user_id}/public", response_model=UserPublic)
+def get_user_public(user_id: int, session: Session = Depends(get_session)):
+    user = session.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return UserPublic(id=user.id, username=user.username, matrix_localpart=user.matrix_localpart)
+
+@app.post("/users/{user_id}/increment_trades", response_model=UserPublicProfile)
+def increment_successful_trades(user_id: int, session: Session = Depends(get_session)):
+    # This endpoint should be secured/internal in production.
+    user = session.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    user.successful_trades += 1
+    session.add(user)
+    session.commit()
+    session.refresh(user)
+    return user
+
+@app.get("/users/by-username/{username}", response_model=UserPublicProfile)
+def get_public_profile_by_username(username: str, session: Session = Depends(get_session)):
+    statement = select(User).where(User.username == username)
+    results = session.exec(statement)
+    user = results.first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return user
+
+
 # --- Admin endpoints ---
 from fastapi import APIRouter
 admin_router = APIRouter(prefix="/admin", tags=["Admin"])
@@ -427,4 +495,80 @@ def admin_force_logout(user_id: int, current_user: User = Depends(get_current_us
     update_user(session, target, {"force_logout_at": datetime.utcnow()})
     return {"user_id": user_id, "message": "logout_forced"}
 
+@admin_router.delete("/reviews/{review_id}")
+def admin_delete_review(review_id: int, current_user: User = Depends(get_current_user), session: Session = Depends(get_session)):
+    _require_admin(current_user)
+    review = session.get(Review, review_id)
+    if not review:
+        raise HTTPException(status_code=404, detail="Review not found")
+    session.delete(review)
+    session.commit()
+    return {"message": "Review deleted"}
+
 app.include_router(admin_router)
+
+
+# --- Reviews ---
+
+@app.post("/reviews", response_model=ReviewRead)
+def create_review(
+    review_in: ReviewCreate,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session)
+):
+    # Check if reviewee exists
+    reviewee = session.get(User, review_in.reviewee_user_id)
+    if not reviewee:
+        raise HTTPException(status_code=404, detail="Reviewee user not found")
+
+    # Check if already reviewed
+    statement = select(Review).where(
+        Review.trade_id == review_in.trade_id,
+        Review.reviewer_user_id == current_user.id
+    )
+    existing = session.exec(statement).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="You have already reviewed this trade")
+
+    review = Review(
+        trade_id=review_in.trade_id,
+        reviewer_user_id=current_user.id,
+        reviewee_user_id=review_in.reviewee_user_id,
+        rating=review_in.rating,
+        comment=review_in.comment
+    )
+    session.add(review)
+    try:
+        session.commit()
+        session.refresh(review)
+    except Exception as e:
+        logger.error(f"Review creation failed: {e}")
+        raise HTTPException(status_code=400, detail="Could not create review")
+        
+    return review
+
+@app.get("/users/{user_id}/reviews", response_model=ReviewsSummary)
+def get_user_reviews(user_id: int, page: int = 1, limit: int = 20, session: Session = Depends(get_session)):
+    offset = (page - 1) * limit
+    
+    # Get reviews where user is reviewee
+    statement = select(Review).where(Review.reviewee_user_id == user_id).order_by(Review.created_at.desc()).offset(offset).limit(limit)
+    reviews = session.exec(statement).all()
+    
+    # Calculate stats
+    from sqlalchemy import func
+    stat_stmt = select(func.count(Review.id), func.avg(Review.rating)).where(Review.reviewee_user_id == user_id)
+    count, avg = session.exec(stat_stmt).one()
+    
+    return {
+        "user_id": user_id,
+        "average_rating": float(avg) if avg else 0.0,
+        "count": count or 0,
+        "reviews": reviews
+    }
+
+@app.get("/reviews/by-trade/{trade_id}", response_model=list[ReviewRead])
+def get_reviews_by_trade(trade_id: str, current_user: User = Depends(get_current_user), session: Session = Depends(get_session)):
+    statement = select(Review).where(Review.trade_id == trade_id)
+    reviews = session.exec(statement).all()
+    return reviews
