@@ -62,6 +62,7 @@ class ReviewRead(BaseModel):
     id: int
     trade_id: str
     reviewer_user_id: int
+    reviewer_username: Optional[str] = None
     reviewee_user_id: int
     rating: int
     comment: str

@@ -100,7 +100,7 @@ def register(user_in: UserRegister, session: Session = Depends(get_session)):
             localpart = ''.join(ch if ch in allowed else '_' for ch in raw).strip('_') or f"{getattr(settings,'MATRIX_USER_PREFIX','u')}{user.id}"
             url = base + "/_matrix/client/v3/register"
             payload = {"username": localpart, "password": user_in.password, "auth": {"type": "m.login.dummy"}}
-            with httpx.Client(timeout=10.0) as client:
+            with httpx.Client(timeout=3.0) as client:
                 r = client.post(url, json=payload)
                 if r.status_code in (200, 201):
                     # persist matrix_localpart
@@ -560,11 +560,19 @@ def get_user_reviews(user_id: int, page: int = 1, limit: int = 20, session: Sess
     stat_stmt = select(func.count(Review.id), func.avg(Review.rating)).where(Review.reviewee_user_id == user_id)
     count, avg = session.exec(stat_stmt).one()
     
+    # Enrich with reviewer username
+    enriched = []
+    for r in reviews:
+        reviewer = session.get(User, r.reviewer_user_id)
+        rd = r.dict()
+        rd['reviewer_username'] = reviewer.username if reviewer else "Unknown"
+        enriched.append(rd)
+    
     return {
         "user_id": user_id,
         "average_rating": float(avg) if avg else 0.0,
         "count": count or 0,
-        "reviews": reviews
+        "reviews": enriched
     }
 
 @app.get("/reviews/by-trade/{trade_id}", response_model=list[ReviewRead])
