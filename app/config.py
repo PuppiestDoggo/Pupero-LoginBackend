@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     MATRIX_SERVER_NAME: str = "localhost"
     MATRIX_USER_PREFIX: str = "u"
     MATRIX_DEFAULT_PASSWORD_SECRET: str = "change-me"
+    MATRIX_ADMIN_SECRET: str | None = None  # Synapse registration_shared_secret for Admin API
 
     # Accept extra env vars like LOGIN_PORT without failing
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")

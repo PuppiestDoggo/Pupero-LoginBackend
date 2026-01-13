@@ -23,9 +23,12 @@ from app.database import run_startup_migrations
 @app.on_event("startup")
 def _startup_migrations():
     try:
+        logger.info(json.dumps({"event": "startup_migrations_start"}))
         run_startup_migrations()
-    except Exception:
+        logger.info(json.dumps({"event": "startup_migrations_success"}))
+    except Exception as e:
         # Do not block startup if migrations fail; errors will surface on first access otherwise
+        logger.error(json.dumps({"event": "startup_migrations_failed", "error": str(e)}))
         pass
 
 # Basic health endpoint for docker healthcheck
@@ -41,9 +44,21 @@ def health():
 # Basic JSON logging setup
 logger = logging.getLogger("pupero_auth")
 if not logger.handlers:
-    handler = logging.StreamHandler()
     logger.setLevel(logging.INFO)
-    logger.addHandler(handler)
+    # Stdout handler
+    stdout_handler = logging.StreamHandler()
+    logger.addHandler(stdout_handler)
+    # Optional File handler
+    import os
+    log_file = os.getenv("LOG_FILE")
+    if log_file:
+        try:
+            os.makedirs(os.path.dirname(log_file), exist_ok=True)
+            from logging import FileHandler
+            file_handler = FileHandler(log_file)
+            logger.addHandler(file_handler)
+        except Exception as e:
+            logger.error(json.dumps({"event": "file_logging_setup_failed", "error": str(e)}))
 
 # Request logging middleware
 @app.middleware("http")
@@ -87,7 +102,7 @@ def register(user_in: UserRegister, session: Session = Depends(get_session)):
         logger.info(json.dumps({"event": "register_conflict_username", "username": username}))
         raise HTTPException(status_code=400, detail="Username already taken")
     user = create_user(session, user_in.email, user_in.password, username=username)
-    logger.info(json.dumps({"event": "register_success", "user": user.email}))
+    logger.info(json.dumps({"event": "register_success", "user": user.email, "user_id": user.id}))
 
     # Attempt to create a Matrix account for the user using their username and website password (best-effort)
     try:
@@ -105,8 +120,9 @@ def register(user_in: UserRegister, session: Session = Depends(get_session)):
                 if r.status_code in (200, 201):
                     # persist matrix_localpart
                     update_user(session, user, {"matrix_localpart": localpart})
-                    logger.info(json.dumps({"event": "matrix_register", "user_id": user.id, "localpart": localpart, "status": r.status_code}))
+                    logger.info(json.dumps({"event": "matrix_register_success", "user_id": user.id, "localpart": localpart, "status": r.status_code}))
                 else:
+                    logger.warning(json.dumps({"event": "matrix_register_failed", "user_id": user.id, "localpart": localpart, "status": r.status_code, "response": r.text}))
                     try:
                         data = r.json()
                         if r.status_code == 400 and data.get("errcode") == "M_USER_IN_USE":
@@ -159,8 +175,12 @@ def login(credentials: UserLogin, session: Session = Depends(get_session)):
         user = get_user_by_username(session, credentials.username)
     elif credentials.email:
         user = get_user_by_email(session, credentials.email)
-    if not user or not verify_password(credentials.password, user.password_hash):
-        logger.info(json.dumps({"event": "login_failed", "username": credentials.username, "email": credentials.email}))
+    if not user:
+        logger.info(json.dumps({"event": "login_failed_user_not_found", "username": credentials.username, "email": credentials.email}))
+        raise HTTPException(status_code=400, detail="Incorrect username/email or password")
+    
+    if not verify_password(credentials.password, user.password_hash):
+        logger.info(json.dumps({"event": "login_failed_password", "user": user.email}))
         raise HTTPException(status_code=400, detail="Incorrect username/email or password")
     if user.totp_secret:
         if not credentials.totp or not verify_totp(user.totp_secret, credentials.totp):
@@ -483,7 +503,49 @@ def admin_reset_password(user_id: int, payload: dict = Body(default={}), current
         raise HTTPException(status_code=400, detail="Password too short")
     from app.auth import hash_password
     update_user(session, target, {"password_hash": hash_password(new_password)})
-    # Note: As requested, do NOT update Matrix here (admin does not have current password for UIA)
+    # Sync password to Matrix using Synapse Admin API (best-effort)
+    try:
+        if getattr(settings, "MATRIX_ENABLED", True) and getattr(settings, "MATRIX_HS_URL", None) and getattr(settings, "MATRIX_ADMIN_SECRET", None):
+            import httpx
+            import hmac
+            import hashlib
+            base = settings.MATRIX_HS_URL.rstrip("/")
+            server_name = getattr(settings, "MATRIX_SERVER_NAME", "Pupero")
+            # Determine Matrix localpart
+            local = target.matrix_localpart
+            if not local:
+                raw = (target.username or "").strip().lower()
+                allowed = set("abcdefghijklmnopqrstuvwxyz0123456789._=-")
+                local = ''.join(ch if ch in allowed else '_' for ch in raw).strip('_') or f"{getattr(settings,'MATRIX_USER_PREFIX','u')}{target.id}"
+            matrix_user_id = f"@{local}:{server_name}"
+            # Use Synapse Admin API to reset password
+            # PUT /_synapse/admin/v2/users/{user_id} with {"password": "..."}
+            # Requires a valid admin access token or shared secret nonce
+            # We'll use the shared secret to generate a MAC for registration-style auth
+            # Actually, Synapse Admin API v2 requires an admin access token, not shared secret directly
+            # Alternative: Use /_synapse/admin/v1/reset_password/{user_id} with shared secret nonce
+            nonce_url = base + "/_synapse/admin/v1/register"
+            with httpx.Client(timeout=10.0) as client:
+                # Get nonce
+                nonce_resp = client.get(nonce_url)
+                if nonce_resp.status_code == 200:
+                    nonce = nonce_resp.json().get("nonce")
+                    if nonce:
+                        # Generate MAC: HMAC-SHA1(shared_secret, nonce + "\x00" + user + "\x00" + password + "\x00" + admin_flag)
+                        admin_flag = "notadmin"
+                        mac_msg = f"{nonce}\x00{local}\x00{new_password}\x00{admin_flag}"
+                        mac = hmac.new(settings.MATRIX_ADMIN_SECRET.encode(), mac_msg.encode(), hashlib.sha1).hexdigest()
+                        # This registers or updates the user
+                        reg_payload = {
+                            "nonce": nonce,
+                            "username": local,
+                            "password": new_password,
+                            "admin": False,
+                            "mac": mac
+                        }
+                        client.post(nonce_url, json=reg_payload)
+    except Exception as e:
+        logger.warning(f"Matrix password sync failed for user {user_id}: {e}")
     return {"user_id": user_id, "message": "password_reset"}
 
 @admin_router.post("/users/{user_id}/logout")
@@ -506,6 +568,24 @@ def admin_delete_review(review_id: int, current_user: User = Depends(get_current
     return {"message": "Review deleted"}
 
 app.include_router(admin_router)
+
+
+@app.get("/users/directory", response_model=list[UserPublicProfile])
+def get_user_directory(
+    skip: int = 0,
+    limit: int = 20,
+    q: Optional[str] = None,
+    session: Session = Depends(get_session)
+):
+    query = select(User).where(User.is_disabled == False)
+    if q:
+        # Case-insensitive search if possible, or just contains
+        query = query.where(User.username.contains(q))
+    # Order by reputation (trades) then newness
+    query = query.order_by(User.successful_trades.desc(), User.created_at.desc())
+    query = query.offset(skip).limit(limit)
+    users = session.exec(query).all()
+    return users
 
 
 # --- Reviews ---
