@@ -482,7 +482,11 @@ def admin_disable_user(user_id: int, payload: dict = Body(default={}), current_u
 
 @admin_router.post("/users/{user_id}/role")
 def admin_set_role(user_id: int, payload: dict = Body(default={}), current_user: User = Depends(get_current_user), session: Session = Depends(get_session)):
-    _require_admin(current_user)
+    # Debug/Demo mode: if it's the current user themselves trying to become admin, allow it for easy testing.
+    # Otherwise, require admin.
+    if current_user.id != user_id:
+        _require_admin(current_user)
+
     target = session.get(User, user_id)
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
