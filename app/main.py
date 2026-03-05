@@ -91,16 +91,16 @@ def register(user_in: UserRegister, session: Session = Depends(get_session)):
     existing_user = get_user_by_email(session, user_in.email)
     if existing_user:
         logger.info(json.dumps({"event": "register_conflict", "email": user_in.email}))
-        raise HTTPException(status_code=400, detail="Email already registered")
+        raise HTTPException(status_code=400, detail="Email déjà enregistré")
     # Ensure username present; if missing, derive from email local-part
     username = (user_in.username or user_in.email.split("@")[0]).strip()
     if not username:
-        raise HTTPException(status_code=400, detail="Username is required")
+        raise HTTPException(status_code=400, detail="Nom d'utilisateur est requis")
     # Enforce uniqueness
     from app.crud import get_user_by_username
     if get_user_by_username(session, username):
         logger.info(json.dumps({"event": "register_conflict_username", "username": username}))
-        raise HTTPException(status_code=400, detail="Username already taken")
+        raise HTTPException(status_code=400, detail="Nom d'utilisateur déjà pris")
     user = create_user(session, user_in.email, user_in.password, username=username)
     logger.info(json.dumps({"event": "register_success", "user": user.email, "user_id": user.id}))
 
@@ -177,15 +177,15 @@ def login(credentials: UserLogin, session: Session = Depends(get_session)):
         user = get_user_by_email(session, credentials.email)
     if not user:
         logger.info(json.dumps({"event": "login_failed_user_not_found", "username": credentials.username, "email": credentials.email}))
-        raise HTTPException(status_code=400, detail="Incorrect username/email or password")
+        raise HTTPException(status_code=400, detail="Nom d'utilisateur/email ou mot de passe incorrect")
     
     if not verify_password(credentials.password, user.password_hash):
         logger.info(json.dumps({"event": "login_failed_password", "user": user.email}))
-        raise HTTPException(status_code=400, detail="Incorrect username/email or password")
+        raise HTTPException(status_code=400, detail="Nom d'utilisateur/email ou mot de passe incorrect")
     if user.totp_secret:
         if not credentials.totp or not verify_totp(user.totp_secret, credentials.totp):
             logger.info(json.dumps({"event": "login_failed_2fa", "user": user.email}))
-            raise HTTPException(status_code=400, detail="Invalid or missing 2FA code")
+            raise HTTPException(status_code=400, detail="Code 2FA invalide ou manquant")
     access_exp = None
     refresh_exp = None
     if credentials.remember_me:
@@ -221,7 +221,7 @@ def refresh(token_in: TokenRefresh, session: Session = Depends(get_session)):
     email = verify_token(token_in.refresh_token)
     if not email:
         logger.info(json.dumps({"event": "refresh_failed"}))
-        raise HTTPException(status_code=401, detail="Invalid refresh token")
+        raise HTTPException(status_code=401, detail="Jeton de rafraîchissement invalide")
     user = get_user_by_email(session, email)
     if not user:
         logger.info(json.dumps({"event": "refresh_user_not_found", "email": email}))
@@ -260,7 +260,7 @@ def update_profile(update_in: UserUpdate, current_user: User = Depends(get_curre
             if getattr(settings, "MATRIX_ENABLED", True) and getattr(settings, "MATRIX_HS_URL", None):
                 # Require current password for username change to allow Matrix sync
                 if not update_in.current_password or not verify_password(update_in.current_password, current_user.password_hash):
-                     raise HTTPException(status_code=400, detail="Current password required to change username")
+                     raise HTTPException(status_code=400, detail="Mot de passe actuel requis pour changer le nom d'utilisateur")
                 try:
                     import httpx
                     base = settings.MATRIX_HS_URL.rstrip("/")
@@ -355,7 +355,7 @@ def update_profile(update_in: UserUpdate, current_user: User = Depends(get_curre
 @app.post("/totp/enable/start", response_model=TOTPEnableResponse)
 def start_totp_enable(current_user: User = Depends(get_current_user)):
     if current_user.totp_secret:
-        raise HTTPException(status_code=400, detail="TOTP already enabled")
+        raise HTTPException(status_code=400, detail="TOTP déjà activé")
     # Generate a secret and QR but DO NOT persist yet
     secret = generate_totp_secret()
     qr_code = generate_totp_qr(current_user.email, secret)
@@ -369,9 +369,9 @@ def confirm_totp_enable(
     session: Session = Depends(get_session),
 ):
     if current_user.totp_secret:
-        raise HTTPException(status_code=400, detail="TOTP already enabled")
+        raise HTTPException(status_code=400, detail="TOTP déjà activé")
     if not verify_totp(payload.secret, payload.code):
-        raise HTTPException(status_code=400, detail="Invalid 2FA code")
+        raise HTTPException(status_code=400, detail="Code 2FA invalide")
     set_totp_secret(session, current_user, payload.secret)
     logger.info(json.dumps({"event": "totp_enabled", "user": current_user.email}))
     return {"message": "TOTP enabled"}
@@ -379,7 +379,7 @@ def confirm_totp_enable(
 @app.post("/totp/disable", response_model=dict)
 def disable_totp(current_user: User = Depends(get_current_user), session: Session = Depends(get_session)):
     if not current_user.totp_secret:
-        raise HTTPException(status_code=400, detail="TOTP not enabled")
+        raise HTTPException(status_code=400, detail="TOTP non activé")
     crud_disable_totp(session, current_user)
     logger.info(json.dumps({"event": "totp_disabled", "user": current_user.email}))
     return {"message": "TOTP disabled"}
@@ -398,16 +398,16 @@ def delete_account(
 ):
     # Require explicit confirmation
     if not payload.confirm:
-        raise HTTPException(status_code=400, detail="Confirmation checkbox is required")
+        raise HTTPException(status_code=400, detail="La case de confirmation est requise")
     # Verify current password
     if not payload.current_password or not verify_password(payload.current_password, current_user.password_hash):
         logger.info(json.dumps({"event": "delete_failed_bad_password", "user": current_user.email}))
-        raise HTTPException(status_code=400, detail="Current password is incorrect")
+        raise HTTPException(status_code=400, detail="Le mot de passe actuel est incorrect")
     # If TOTP enabled, verify if provided
     if current_user.totp_secret:
         if not payload.totp or not verify_totp(current_user.totp_secret, payload.totp):
             logger.info(json.dumps({"event": "delete_failed_2fa", "user": current_user.email}))
-            raise HTTPException(status_code=400, detail="Invalid or missing 2FA code")
+            raise HTTPException(status_code=400, detail="Code 2FA invalide ou manquant")
     email = current_user.email
     delete_user(session, current_user)
     logger.info(json.dumps({"event": "account_deleted", "user": email}))
@@ -418,7 +418,7 @@ def delete_account(
 def get_user_public(user_id: int, session: Session = Depends(get_session)):
     user = session.get(User, user_id)
     if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+        raise HTTPException(status_code=404, detail="Utilisateur non trouvé")
     return UserPublic(id=user.id, username=user.username, matrix_localpart=user.matrix_localpart)
 
 @app.post("/users/{user_id}/increment_trades", response_model=UserPublicProfile)
@@ -426,7 +426,7 @@ def increment_successful_trades(user_id: int, session: Session = Depends(get_ses
     # This endpoint should be secured/internal in production.
     user = session.get(User, user_id)
     if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+        raise HTTPException(status_code=404, detail="Utilisateur non trouvé")
     user.successful_trades += 1
     session.add(user)
     session.commit()
@@ -439,7 +439,7 @@ def get_public_profile_by_username(username: str, session: Session = Depends(get
     results = session.exec(statement)
     user = results.first()
     if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+        raise HTTPException(status_code=404, detail="Utilisateur non trouvé")
     return user
 
 
@@ -450,7 +450,7 @@ admin_router = APIRouter(prefix="/admin", tags=["Admin"])
 def _require_admin(user: User):
     role = (user.role or "").strip().lower()
     if role not in {"admin", "superadmin"}:
-        raise HTTPException(status_code=403, detail="Admin privileges required")
+        raise HTTPException(status_code=403, detail="Privilèges administrateur requis")
 
 @admin_router.get("/users")
 def admin_list_users(current_user: User = Depends(get_current_user), session: Session = Depends(get_session)):
@@ -475,7 +475,7 @@ def admin_disable_user(user_id: int, payload: dict = Body(default={}), current_u
     _require_admin(current_user)
     target = session.get(User, user_id)
     if not target:
-        raise HTTPException(status_code=404, detail="User not found")
+        raise HTTPException(status_code=404, detail="Utilisateur non trouvé")
     disabled = bool(payload.get("disabled", True))
     update_user(session, target, {"is_disabled": disabled})
     return {"user_id": user_id, "is_disabled": disabled}
@@ -489,10 +489,10 @@ def admin_set_role(user_id: int, payload: dict = Body(default={}), current_user:
 
     target = session.get(User, user_id)
     if not target:
-        raise HTTPException(status_code=404, detail="User not found")
+        raise HTTPException(status_code=404, detail="Utilisateur non trouvé")
     new_role = (payload.get("role") or "").strip().lower()
     if new_role not in {"user", "admin", "superadmin"}:
-        raise HTTPException(status_code=400, detail="Invalid role")
+        raise HTTPException(status_code=400, detail="Rôle invalide")
     update_user(session, target, {"role": new_role})
     return {"user_id": user_id, "role": new_role}
 
@@ -501,10 +501,10 @@ def admin_reset_password(user_id: int, payload: dict = Body(default={}), current
     _require_admin(current_user)
     target = session.get(User, user_id)
     if not target:
-        raise HTTPException(status_code=404, detail="User not found")
+        raise HTTPException(status_code=404, detail="Utilisateur non trouvé")
     new_password = payload.get("new_password")
     if not new_password or len(str(new_password)) < 6:
-        raise HTTPException(status_code=400, detail="Password too short")
+        raise HTTPException(status_code=400, detail="Mot de passe trop court")
     from app.auth import hash_password
     update_user(session, target, {"password_hash": hash_password(new_password)})
     # Sync password to Matrix using Synapse Admin API (best-effort)
@@ -557,7 +557,7 @@ def admin_force_logout(user_id: int, current_user: User = Depends(get_current_us
     _require_admin(current_user)
     target = session.get(User, user_id)
     if not target:
-        raise HTTPException(status_code=404, detail="User not found")
+        raise HTTPException(status_code=404, detail="Utilisateur non trouvé")
     update_user(session, target, {"force_logout_at": datetime.utcnow()})
     return {"user_id": user_id, "message": "logout_forced"}
 
@@ -566,7 +566,7 @@ def admin_delete_review(review_id: int, current_user: User = Depends(get_current
     _require_admin(current_user)
     review = session.get(Review, review_id)
     if not review:
-        raise HTTPException(status_code=404, detail="Review not found")
+        raise HTTPException(status_code=404, detail="Avis non trouvé")
     session.delete(review)
     session.commit()
     return {"message": "Review deleted"}
@@ -603,7 +603,7 @@ def create_review(
     # Check if reviewee exists
     reviewee = session.get(User, review_in.reviewee_user_id)
     if not reviewee:
-        raise HTTPException(status_code=404, detail="Reviewee user not found")
+        raise HTTPException(status_code=404, detail="Utilisateur évalué non trouvé")
 
     # Check if already reviewed
     statement = select(Review).where(
@@ -612,7 +612,7 @@ def create_review(
     )
     existing = session.exec(statement).first()
     if existing:
-        raise HTTPException(status_code=400, detail="You have already reviewed this trade")
+        raise HTTPException(status_code=400, detail="Vous avez déjà évalué cette transaction")
 
     review = Review(
         trade_id=review_in.trade_id,
@@ -627,7 +627,7 @@ def create_review(
         session.refresh(review)
     except Exception as e:
         logger.error(f"Review creation failed: {e}")
-        raise HTTPException(status_code=400, detail="Could not create review")
+        raise HTTPException(status_code=400, detail="Impossible de créer l'avis")
         
     return review
 
