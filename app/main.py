@@ -496,6 +496,22 @@ def admin_set_role(user_id: int, payload: dict = Body(default={}), current_user:
     update_user(session, target, {"role": new_role})
     return {"user_id": user_id, "role": new_role}
 
+@admin_router.delete("/users/{user_id}")
+def admin_delete_user(user_id: int, current_user: User = Depends(get_current_user), session: Session = Depends(get_session)):
+    _require_admin(current_user)
+    target = session.get(User, user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="Utilisateur non trouvé")
+    
+    # Optional: Prevent admin from deleting themselves
+    if target.id == current_user.id:
+        raise HTTPException(status_code=400, detail="Vous ne pouvez pas supprimer votre propre compte via cette interface")
+
+    email = target.email
+    delete_user(session, target)
+    logger.info(json.dumps({"event": "admin_account_deleted", "user": email, "actor": current_user.email}))
+    return {"message": "Utilisateur supprimé avec succès"}
+
 @admin_router.post("/users/{user_id}/password")
 def admin_reset_password(user_id: int, payload: dict = Body(default={}), current_user: User = Depends(get_current_user), session: Session = Depends(get_session)):
     _require_admin(current_user)
