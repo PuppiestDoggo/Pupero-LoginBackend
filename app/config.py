@@ -26,6 +26,14 @@ class Settings(BaseSettings):
     MATRIX_DEFAULT_PASSWORD_SECRET: str = "change-me"
     MATRIX_ADMIN_SECRET: str | None = None  # Synapse registration_shared_secret for Admin API
 
+    # SMTP Configuration (Proton Bridge by default)
+    SMTP_HOST: str = "127.0.0.1"
+    SMTP_PORT: int = 1025
+    SMTP_USER: str = "votre-email@protonmail.com"
+    SMTP_PASS: str = "votre-mot-de-passe-bridge"
+    SMTP_FROM: str = "noreply@votre-domaine.com"
+    FRONTEND_URL: str = "http://localhost:5000"
+
     # Accept extra env vars like LOGIN_PORT without failing
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

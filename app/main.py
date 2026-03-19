@@ -4,14 +4,16 @@ from sqlmodel import Session, select
 import logging
 import json
 import time
+import smtplib
+from email.mime.text import MIMEText
 from datetime import timedelta
 from app.database import get_session
 from app.crud import create_user, get_user_by_email, update_user, crud_enable_totp, set_totp_secret, crud_disable_totp, delete_user
 from app.auth import verify_password, create_access_token, create_refresh_token, verify_token, verify_totp, \
-    generate_totp_qr, generate_totp_secret
+    generate_totp_qr, generate_totp_secret, hash_password
 from app.deps import get_current_user
 from app.models import User, Review
-from app.schemas import UserRegister, UserLogin, Token, TokenRefresh, PasswordResetRequest, UserProfile, UserUpdate, TOTPEnableResponse, TOTPEnableConfirm, DeleteAccountRequest, ReviewCreate, ReviewRead, ReviewsSummary, UserPublic, UserPublicProfile
+from app.schemas import UserRegister, UserLogin, Token, TokenRefresh, PasswordResetRequest, PasswordResetConfirm, UserProfile, UserUpdate, TOTPEnableResponse, TOTPEnableConfirm, DeleteAccountRequest, ReviewCreate, ReviewRead, ReviewsSummary, UserPublic, UserPublicProfile
 from app.config import settings
 from datetime import datetime
 
@@ -231,13 +233,56 @@ def refresh(token_in: TokenRefresh, session: Session = Depends(get_session)):
     logger.info(json.dumps({"event": "refresh_success", "user": user.email}))
     return {"access_token": access_token, "refresh_token": refresh_token}
 
+def send_reset_email(email: str, token: str):
+    reset_link = f"{settings.FRONTEND_URL}/reset-password?token={token}"
+    body = f"Cliquez sur le lien suivant pour réinitialiser votre mot de passe : {reset_link}\n\nCe lien expirera dans 15 minutes."
+    
+    msg = MIMEText(body)
+    msg['Subject'] = 'Réinitialisation de mot de passe - Pupero'
+    msg['From'] = settings.SMTP_FROM
+    msg['To'] = email
+
+    try:
+        with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT, timeout=10) as server:
+            if settings.SMTP_PASS and settings.SMTP_USER:
+                server.starttls()
+                server.login(settings.SMTP_USER, settings.SMTP_PASS)
+            server.send_message(msg)
+    except Exception as e:
+        logger.error(f"Failed to send email: {e}")
+
 @app.post("/password/reset", response_model=dict)
 def password_reset(reset_in: PasswordResetRequest, session: Session = Depends(get_session)):
     user = get_user_by_email(session, reset_in.email)
     if not user:
-        return {"message": "If the email exists, a reset link has been sent"}  # Security: no disclosure
-    # TODO: Implement actual reset logic (e.g., send email with token)
-    return {"message": "Reset link sent"}
+        # Security: no disclosure
+        return {"message": "Si l'adresse email existe, un lien de réinitialisation a été envoyé."}
+    
+    # Generate a short-lived token (15 mins)
+    token = create_access_token(user.email, expires_delta=timedelta(minutes=15))
+    send_reset_email(user.email, token)
+    
+    return {"message": "Si l'adresse email existe, un lien de réinitialisation a été envoyé."}
+
+@app.post("/password/reset/confirm", response_model=dict)
+def password_reset_confirm(confirm_in: PasswordResetConfirm, session: Session = Depends(get_session)):
+    email = verify_token(confirm_in.token)
+    if not email:
+        raise HTTPException(status_code=400, detail="Lien de réinitialisation invalide ou expiré")
+    
+    user = get_user_by_email(session, email)
+    if not user:
+        raise HTTPException(status_code=404, detail="Utilisateur non trouvé")
+    
+    # Update password
+    user.password_hash = hash_password(confirm_in.new_password)
+    # Force logout by updating force_logout_at
+    user.force_logout_at = datetime.utcnow()
+    
+    session.add(user)
+    session.commit()
+    
+    return {"message": "Mot de passe réinitialisé avec succès"}
 
 @app.get("/user/profile", response_model=UserProfile)
 def get_profile(current_user: User = Depends(get_current_user)):
